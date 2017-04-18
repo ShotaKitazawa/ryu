@@ -29,17 +29,6 @@ LOG = logging.getLogger('SimpleForward')
 LOG.setLevel(logging.DEBUG)
 logging.basicConfig()
 
-SERVER_IPADDR = ["10.10.11.11","10.10.11.12"]
-SERVER_MACADDR = ["00:0c:29:24:93:13", "00:0c:29:74:37:ee"]
-OUTER_IPADDR = "10.10.10.1"
-INNER_IPADDR = "10.10.11.1"
-OUTER_MACADDR = "01:01:01:01:01:01"
-INNER_MACADDR = "02:02:02:02:02:02"
-OUTER_PORT = 1
-INNER_PORT = 2
-TCP_HTTP = 80
-count = 50000
-
 
 class SimpleForward(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -52,15 +41,12 @@ class SimpleForward(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
+        # 初期化 {
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
         datapath.id = msg.datapath_id
         ofproto_parser = datapath.ofproto_parser
-
-        match = ofproto_parser.OFPMatch()
-        actions = [ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
-                                                  ofproto.OFPCML_NO_BUFFER)]
 
         set_config = ofproto_parser.OFPSetConfig(
             datapath,
@@ -69,6 +55,14 @@ class SimpleForward(app_manager.RyuApp):
         )
         datapath.send_msg(set_config)
         self.install_table_miss(datapath, datapath.id)
+        # }
+
+        # OFS に届いたパケットを OFC に全て PacketIN {
+        # match = ofproto_parser.OFPMatch()
+        # actions = [ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+        #                                          ofproto.OFPCML_NO_BUFFER)]
+        # }
+
         LOG.debug("Switch Ready.")
 
     def install_table_miss(self, datapath, dpid):
