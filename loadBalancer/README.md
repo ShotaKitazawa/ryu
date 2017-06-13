@@ -1,9 +1,19 @@
-# NAPTBalance
+# About
 
-## 想定環境
+Web サーバ 2 台をロードバランスします。
+現在、TCP 80 のみのサポートのため、ping は飛びません。
 
-- resTime (クライアントの応答速度で振り分け) を前提
-  - roundRobin は、10.10.13.0/24 ネットワークがなく、均等に振り分けを行う
+参考スライド: https://www.slideshare.net/ssuserf17250/openflow-76434754
+
+## NAPTBalance
+
+Client からのパケットを OFS にて NAPT して Server へロードバランスを行います。
+
+### 環境
+
+- resTime (クライアントの応答速度で振り分け) での図
+  - roundRobin は、10.10.13.0/24 ネットワークがなく、OFS は均等に振り分けを行う
+- Server{01,02} はデフォルトゲートウェイに 10.10.11.1 を指定する。
 
 ```
                          OFC                           Server01        
@@ -15,23 +25,47 @@ Client                   |             |  |
 10.10.10.x               | 10.10.12.1  |  | 10.10.13.12------          
 ------       10.10.10.1------          ---|------------|    |          
 |    |-----------------|    |-------------+------------|    |          
-------                 ------10.10.11.11    10.10.11.12------          
+------                 ------10.10.11.1     10.10.11.12------          
                         OFS                            Server02        
 ```
 
-## 仕組み
+### 仕組み
+
+- Client からの ARP リクエストに応答する。
+  - Server01,02 の IP, MAC アドレスはコード内に記述
+
+- OFC から 10.10.13.0/24 ネットワークにて Server{01,02} 宛に HTTP HEAD 要求
+  - Server の応答速度を計測
 
 - Client から来たパケットの以下を変更して Server に振り分ける
-  - 送信元 IP: 10.10.10.x > 10.10.11.11
-  - TODO
+  - 送信元 MAC : Client > OFS 右
+  - 送信先 MAC : OFS 左 > Server{01,02}
+  - 送信元 IP  : 10.10.10.x > 10.10.11.1
+  - 送信先 IP  : 10.10.10.1 > 10.10.11.{11,12}
+  - 送信元 TCP : Client's Ephemeral > OFS's Ephemeral
+  - 送信先 TCP : 80 > 80 (不変)
 
+- Server から帰ってきたパケットの以下を変更して Client に送り返す
+  - 送信元 MAC : Server{01,02} > OFS 左
+  - 送信先 MAC : OFS 右 > Client
+  - 送信元 IP  : 10.10.11.{11,12} > 10.10.10.1
+  - 送信先 IP  : 10.10.11.1 > 10.10.10.x
+  - 送信元 TCP : 80 > 80 (不変)
+  - 送信先 TCP : OFS's Ephemeral > Client's Ephemeral
 
-# MacBalance
+### 問題点
 
-## 想定環境
+- 1 コネクション毎に Client の送信元 TCP 番号が変わってしまうため、そのたびに Packet In しなければならない (OFS のフローテーブルで解決できない) ため遅い。
 
-- resTime (クライアントの応答速度で振り分け) を前提
-  - roundRobin は、10.10.13.0/24 ネットワークがなく、均等に振り分けを行う
+## MacBalance
+
+Client からのパケットを OFS にて MAC アドレスの書換のみを行い Server へロードバランスを行います。
+
+### 想定環境
+
+- resTime (クライアントの応答速度で振り分け) での図
+  - roundRobin は、10.10.13.0/24 ネットワークがなく、OFS にて均等に振り分けを行う
+- Server{01,02} はデフォルトゲートウェイに 10.10.10.10 を指定する。
 
 ```
                          OFC                           Server01        
@@ -47,7 +81,26 @@ Client                   |             |  |
                         OFS                            Server02        
 ```
 
-## 仕組み
+### 仕組み
+
+- Client からの ARP リクエストに応答する。
+  - Server01,02 の IP, MAC アドレスはコード内に記述
+
+- OFC から 10.10.13.0/24 ネットワークにて Server{01,02} 宛に HTTP HEAD 要求
+  - Server の応答速度を計測
 
 - Client から来たパケットの以下を変更して Server に振り分ける
-  - TODO
+  - 送信元 MAC : Client > OFS 右
+  - 送信先 MAC : OFS 左 > Server{01,02}
+
+- Server から帰ってきたパケットの以下を変更して Client に送り返す
+  - 送信元 MAC : Server{01,02} > OFS 左
+  - 送信先 MAC : OFS 右 > Client
+
+
+# 参考
+
+- http://ttsubo.hatenablog.com/
+  - http://ttsubo.hatenablog.com/entry/2014/01/11/012353
+  - http://ttsubo.hatenablog.com/entry/2014/01/13/150758
+- https://www.goto.info.waseda.ac.jp/forB4/pdf-th/2011/0131_ikeda.pdf
