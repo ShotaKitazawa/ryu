@@ -30,8 +30,8 @@ LOG.setLevel(logging.DEBUG)
 logging.basicConfig()
 
 SERVER_MACADDR = ["00:0c:29:24:93:13", "00:0c:29:74:37:ee"]
-OUTER_IPADDR = "192.168.38.254"
-INNER_IPADDR = "192.168.38.253"
+OUTER_IPADDR = "10.10.10.1"
+INNER_IPADDR = "10.10.10.10"
 OUTER_MACADDR = "01:01:01:01:01:01"
 INNER_MACADDR = "02:02:02:02:02:02"
 OUTER_PORT = 1
@@ -54,13 +54,16 @@ class SimpleForward(app_manager.RyuApp):
     def server_res_check(self):
         global server_res_time
         for i in range(len(SERVER_MACADDR)):
-            start = time.time()
-            conn = http.client.HTTPConnection(SERVER_RES_CHECK_IPADDR[i])
-            conn.request('HEAD',"/")
-            resp = conn.getresponse()
-            conn.close()
-            server_res_time[i] = time.time() - start
-        t = threading.Timer(5,self.server_res_check)
+            try:
+                start = time.time()
+                conn = http.client.HTTPConnection(SERVER_RES_CHECK_IPADDR[i])
+                conn.request('HEAD',"/")
+                resp = conn.getresponse()
+                conn.close()
+                server_res_time[i] = time.time() - start
+            except:
+                server_res_time[i] = 100
+        t = threading.Timer(1,self.server_res_check)
         t.start()
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -199,10 +202,9 @@ class SimpleForward(app_manager.RyuApp):
         datapath.send_msg(out)
 
     def send_flow(self, datapath):
-        global count
         LOG.debug("Send Flow_mod packet for %s", datapath)
         for i in range(len(SERVER_MACADDR)):
-            if i == count%len(SERVER_MACADDR):
+            if i == server_res_time.index(min(server_res_time)):
                 self.add_flow(datapath, OUTER_PORT,
                               self.CLIENT_MACADDR, OUTER_MACADDR, 
                               INNER_MACADDR, SERVER_MACADDR[i],
@@ -213,7 +215,6 @@ class SimpleForward(app_manager.RyuApp):
                               OUTER_MACADDR, self.CLIENT_MACADDR,
                               ether.ETH_TYPE_IP, OUTER_PORT,
                               )
-        count += 1
 
     def add_flow(self, datapath, inPort, 
                  org_srcMac, org_dstMac,
@@ -225,7 +226,6 @@ class SimpleForward(app_manager.RyuApp):
             eth_src=org_srcMac,
             eth_dst=org_dstMac,
             eth_type=ethertype,
-            ip_proto=6,
         )
         actions = [datapath.ofproto_parser.OFPActionSetField(eth_src=mod_srcMac),
                    datapath.ofproto_parser.OFPActionSetField(eth_dst=mod_dstMac),

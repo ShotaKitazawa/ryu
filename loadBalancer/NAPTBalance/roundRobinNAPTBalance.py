@@ -29,7 +29,7 @@ LOG = logging.getLogger('SimpleForward')
 LOG.setLevel(logging.DEBUG)
 logging.basicConfig()
 
-SERVER_IPADDR = ["10.10.11.11","10.10.11.12"]
+SERVER_IPADDR = ["10.10.11.11", "10.10.11.12"]
 SERVER_MACADDR = ["00:0c:29:24:93:13", "00:0c:29:74:37:ee"]
 OUTER_IPADDR = "10.10.10.1"
 INNER_IPADDR = "10.10.11.1"

@@ -29,6 +29,17 @@ LOG = logging.getLogger('SimpleForward')
 LOG.setLevel(logging.DEBUG)
 logging.basicConfig()
 
+SERVER_MACADDR = ["00:0c:29:24:93:13", "00:0c:29:74:37:ee"]
+OUTER_IPADDR = "10.10.10.1"
+INNER_IPADDR = "10.10.10.10"
+OUTER_MACADDR = "01:01:01:01:01:01"
+INNER_MACADDR = "02:02:02:02:02:02"
+OUTER_PORT = 1
+INNER_PORT = 2
+count = 0
+SERVER_RES_CHECK_IPADDR = ["10.10.13.11","10.10.13.12"]
+server_res_time = [0,0]
+
 
 class SimpleForward(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -38,15 +49,31 @@ class SimpleForward(app_manager.RyuApp):
 
     def __init__(self, *args, **kwargs):
         super(SimpleForward, self).__init__(*args, **kwargs)
+        threading.Thread(target=self.server_res_check).start()
+
+    def server_res_check(self):
+        global server_res_time
+        for i in range(len(SERVER_MACADDR)):
+            start = time.time()
+            conn = http.client.HTTPConnection(SERVER_RES_CHECK_IPADDR[i])
+            conn.request('HEAD',"/")
+            resp = conn.getresponse()
+            conn.close()
+            server_res_time[i] = time.time() - start
+        t = threading.Timer(5,self.server_res_check)
+        t.start()
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
-        # 初期化 {
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
         datapath.id = msg.datapath_id
         ofproto_parser = datapath.ofproto_parser
+
+        match = ofproto_parser.OFPMatch()
+        actions = [ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                                  ofproto.OFPCML_NO_BUFFER)]
 
         set_config = ofproto_parser.OFPSetConfig(
             datapath,
@@ -55,14 +82,6 @@ class SimpleForward(app_manager.RyuApp):
         )
         datapath.send_msg(set_config)
         self.install_table_miss(datapath, datapath.id)
-        # }
-
-        # OFS に届いたパケットを OFC に全て PacketIN {
-        # match = ofproto_parser.OFPMatch()
-        # actions = [ofproto_parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
-        #                                          ofproto.OFPCML_NO_BUFFER)]
-        # }
-
         LOG.debug("Switch Ready.")
 
     def install_table_miss(self, datapath, dpid):
@@ -117,25 +136,14 @@ class SimpleForward(app_manager.RyuApp):
             return 2
 
     def receive_ip(self, datapath, packet, etherFrame, inPort):
-        ipPacket = packet.get_protocol(ipv4)
-        tcpPacket = packet.get_protocol(tcp)
-        LOG.debug("receive IP packet %s => %s (port%d)"
-                  % (etherFrame.src, etherFrame.dst, inPort))
         self.print_etherFrame(etherFrame)
-        self.print_ipPacket(ipPacket)
-        self.print_tcpPacket(tcpPacket)
         LOG.debug("Drop packet")
 
-        if inPort == OUTER_PORT and ipPacket.dst == OUTER_IPADDR:
+        if inPort == OUTER_PORT and etherFrame.dst != "ff:ff:ff:ff:ff:ff":
             self.CLIENT_MACADDR = etherFrame.src
-            self.CLIENT_IPADDR = ipPacket.src
-            self.CLIENT_TCPADDR = tcpPacket.src_port
 
         if self.CLIENT_MACADDR != None:
-            if tcpPacket.dst_port == TCP_HTTP:
-                self.send_flow(datapath)
-            else:
-                LOG.debug("unknown ip received !")
+            self.send_flow(datapath)
 
     def receive_arp(self, datapath, packet, etherFrame, inPort):
         arpPacket = packet.get_protocol(arp)
@@ -164,6 +172,7 @@ class SimpleForward(app_manager.RyuApp):
             outPort = INNER_PORT
         else:
             LOG.debug("unknown arp requst received !")
+            return 1
 
         self.send_arp(datapath, 2, srcMac, srcIp, dstMac, dstIp, outPort)
         LOG.debug("send ARP reply %s => %s (port%d)" % (srcMac, dstMac, outPort))
@@ -192,41 +201,24 @@ class SimpleForward(app_manager.RyuApp):
     def send_flow(self, datapath):
         global count
         LOG.debug("Send Flow_mod packet for %s", datapath)
-        for i in range(len(SERVER_IPADDR)):
-            if (count % len(SERVER_IPADDR) == i):
-                self.add_flow(datapath, OUTER_PORT, self.CLIENT_MACADDR,
-                              OUTER_MACADDR, ether.ETH_TYPE_IP,
-                              OUTER_IPADDR, INNER_PORT,
-                              self.CLIENT_TCPADDR, TCP_HTTP,
+        for i in range(len(SERVER_MACADDR)):
+            if i == count%len(SERVER_MACADDR):
+                self.add_flow(datapath, OUTER_PORT,
+                              self.CLIENT_MACADDR, OUTER_MACADDR, 
                               INNER_MACADDR, SERVER_MACADDR[i],
-                              INNER_IPADDR, SERVER_IPADDR[i],
-                              count, TCP_HTTP,)
-                self.add_flow(datapath, INNER_PORT, SERVER_MACADDR[i],
-                              INNER_MACADDR, ether.ETH_TYPE_IP,
-                              INNER_IPADDR, OUTER_PORT,
-                              TCP_HTTP, count,
+                              ether.ETH_TYPE_IP, INNER_PORT,
+                              )
+                self.add_flow(datapath, INNER_PORT,
+                              SERVER_MACADDR[i], INNER_MACADDR,
                               OUTER_MACADDR, self.CLIENT_MACADDR,
-                              OUTER_IPADDR, self.CLIENT_IPADDR,
-                              TCP_HTTP, self.CLIENT_TCPADDR,)
+                              ether.ETH_TYPE_IP, OUTER_PORT,
+                              )
         count += 1
 
-    def add_flow_init(self, datapath, priority, match, actions):
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
-
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
-                                             actions)]
-        mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
-                                match=match, instructions=inst)
-        datapath.send_msg(mod)
-
-    def add_flow(self, datapath, inPort, org_srcMac,
-                 org_dstMac, ethertype,
-                 targetIp, outPort,
-                 org_srcTcp, org_dstTcp,
+    def add_flow(self, datapath, inPort, 
+                 org_srcMac, org_dstMac,
                  mod_srcMac, mod_dstMac,
-                 mod_srcIp, mod_dstIp,
-                 mod_srcTcp, mod_dstTcp):
+                 ethertype, outPort,):
 
         match = datapath.ofproto_parser.OFPMatch(
             in_port=inPort,
@@ -234,16 +226,9 @@ class SimpleForward(app_manager.RyuApp):
             eth_dst=org_dstMac,
             eth_type=ethertype,
             ip_proto=6,
-            ipv4_dst=targetIp,
-            tcp_src=org_srcTcp,
-            tcp_dst=org_dstTcp,
         )
         actions = [datapath.ofproto_parser.OFPActionSetField(eth_src=mod_srcMac),
                    datapath.ofproto_parser.OFPActionSetField(eth_dst=mod_dstMac),
-                   datapath.ofproto_parser.OFPActionSetField(ipv4_src=mod_srcIp),
-                   datapath.ofproto_parser.OFPActionSetField(ipv4_dst=mod_dstIp),
-                   datapath.ofproto_parser.OFPActionSetField(tcp_src=mod_srcTcp),
-                   datapath.ofproto_parser.OFPActionSetField(tcp_dst=mod_dstTcp),
                    datapath.ofproto_parser.OFPActionOutput(outPort, 0),
                    ]
         inst = [datapath.ofproto_parser.OFPInstructionActions(
